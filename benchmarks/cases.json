@@ -1,0 +1,27 @@
+[
+  {
+    "id": "case-compile-001",
+    "name": "Python 语法错误导致编译失败",
+    "category": "CompileError",
+    "repo": "owner/sample-repo",
+    "base_ref": "main",
+    "pr_ref": "feature/broken-syntax",
+    "diff": "app/main.py: 缺少右括号",
+    "expected_findings": [
+      "Compile/Parse error in app/main.py"
+    ]
+  },
+  {
+    "id": "case-semantic-001",
+    "name": "状态机遗漏分支导致逻辑缺陷",
+    "category": "SemanticBug",
+    "repo": "owner/sample-repo",
+    "base_ref": "main",
+    "pr_ref": "feature/missing-branch",
+    "diff": "service/state.py: 缺少 ERROR 状态处理",
+    "expected_findings": [
+      "缺少 ERROR 分支导致无限重试"
+    ]
+  }
+]
+

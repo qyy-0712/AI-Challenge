@@ -1,0 +1,210 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  background: #050814;
+  color: #e5e7eb;
+}
+.page {
+  min-height: 100vh;
+  padding: 48px 20px;
+  background-size: 200% 200%;
+  position: relative;
+}
+.aura {
+  position: absolute;
+  width: 320px;
+  height: 320px;
+  filter: blur(120px);
+  opacity: 0.6;
+  z-index: 0;
+}
+.aura-1 {
+  top: 8%;
+  left: 12%;
+  background: #7c3aed;
+}
+.aura-2 {
+  bottom: 6%;
+  right: 10%;
+  background: #06b6d4;
+}
+.glass {
+  position: relative;
+  z-index: 1;
+  max-width: 1080px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  border-radius: 18px;
+  padding: 32px;
+  backdrop-filter: blur(12px);
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+h1 {
+  margin: 0;
+  font-size: 28px;
+}
+.sub {
+  margin: 6px 0 0 0;
+  color: #cbd5e1;
+  font-size: 14px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: #cbd5e1;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1.1fr;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+@media (max-width: 960px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 16px;
+}
+.card.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+input,
+textarea,
+button {
+  font-size: 14px;
+}
+input,
+textarea {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 12, 26, 0.8);
+  color: #e5e7eb;
+}
+textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+button {
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.04);
+}
+button.primary {
+  background: linear-gradient(135deg, #f97316, #ef4444, #8b5cf6, #22c55e);
+  background-size: 250% 250%;
+  border: none;
+  color: #fff;
+  min-width: 150px;
+  animation: flow 10s ease infinite;
+}
+button.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
+}
+.error {
+  color: #fca5a5;
+  font-size: 13px;
+}
+.report-panel {
+  min-height: 320px;
+}
+.report-shell {
+  position: relative;
+  border-radius: 14px;
+  padding: 14px;
+  background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.2), transparent 45%),
+    radial-gradient(circle at 80% 30%, rgba(14, 165, 233, 0.18), transparent 40%),
+    #0a0f1f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.report {
+  white-space: pre-wrap;
+  background: transparent;
+  color: #e5e7eb;
+  padding: 10px;
+  border-radius: 10px;
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  overflow: auto;
+  margin: 0;
+}
+.report-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.hint {
+  color: #94a3b8;
+  font-size: 12px;
+}
+.pill {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e5e7eb;
+}
+@keyframes gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+@keyframes flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
