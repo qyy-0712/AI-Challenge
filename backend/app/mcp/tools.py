@@ -2,83 +2,12 @@ from __future__ import annotations
 
 import ast
 import logging
-import os
 import re
-import subprocess
-import tempfile
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from ..config import Settings
 
 logger = logging.getLogger(__name__)
-
-
-# -----------------------
-#  Compile / Parse checks
-# -----------------------
-def _python_syntax_check(path: str, content: str) -> List[Dict]:
-    errors = []
-    try:
-        ast.parse(content or "", filename=path)
-    except SyntaxError as exc:
-        errors.append(
-            {
-                "file": path,
-                "line": exc.lineno or 0,
-                "type": "SyntaxError",
-                "message": exc.msg,
-            }
-        )
-    return errors
-
-
-def _brace_balance_check(path: str, content: str, pairs: Optional[Dict[str, str]] = None) -> List[Dict]:
-    errors = []
-    pairs = pairs or {"{": "}", "(": ")", "[": "]"}
-    opener = set(pairs.keys())
-    closer = set(pairs.values())
-    stack = []
-    for idx, ch in enumerate(content):
-        if ch in opener:
-            stack.append((ch, idx))
-        elif ch in closer:
-            if not stack:
-                errors.append(
-                    {"file": path, "line": content[:idx].count("\n") + 1, "type": "SyntaxError", "message": f"unexpected '{ch}'"}
-                )
-                break
-            left, _ = stack.pop()
-            if pairs[left] != ch:
-                errors.append(
-                    {"file": path, "line": content[:idx].count("\n") + 1, "type": "SyntaxError", "message": f"unmatched '{left}'"}
-                )
-                break
-    if stack:
-        left, pos = stack[-1]
-        errors.append(
-            {"file": path, "line": content[:pos].count("\n") + 1, "type": "SyntaxError", "message": f"unclosed '{left}'"}
-        )
-    if content.count('"') % 2 == 1 or content.count("'") % 2 == 1:
-        errors.append({"file": path, "line": 1, "type": "SyntaxError", "message": "unclosed string literal (heuristic)"})
-    return errors
-
-
-def _js_syntax_heuristic(path: str, content: str) -> List[Dict]:
-    return _brace_balance_check(path, content)
-
-
-def _java_like_syntax(path: str, content: str) -> List[Dict]:
-    """
-    适用于 Java/C/C++/C#/Go/Rust/PHP/Ruby 的轻量括号与字符串检测。
-    """
-    return _brace_balance_check(path, content)
-
-
-def _php_syntax(path: str, content: str) -> List[Dict]:
-    errors = _brace_balance_check(path, content)
-    if "<?php" not in content[:20] and content.strip().startswith("<?") is False:
-        errors.append({"file": path, "line": 1, "type": "SyntaxError", "message": "missing <?php tag (heuristic)"})
-    return errors
 
 
 # -----------------------
@@ -153,6 +82,137 @@ def _detect_infinite_loop_in_patch(patch: str) -> Optional[Dict]:
 # -----------------------
 #  Static defect checks
 # -----------------------
+class _PyDefectVisitor(ast.NodeVisitor):
+    def __init__(self):
+        self.defects: List[Dict] = []
+
+    def _line(self, node: ast.AST) -> int:
+        return int(getattr(node, "lineno", 0) or 0)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef):
+        self._scan_block_for_dead_code(node.body, node)
+        self._scan_uninitialized_in_function(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        self._scan_block_for_dead_code(node.body, node)
+        self._scan_uninitialized_in_function(node)
+        self.generic_visit(node)
+
+    def visit_BinOp(self, node: ast.BinOp):
+        # Divide by literal zero: /, //, %
+        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and isinstance(node.right, ast.Constant):
+            if node.right.value == 0:
+                self.defects.append(
+                    {
+                        "type": "DivideByZero",
+                        "file": self._file,
+                        "line": self._line(node),
+                        "confidence": "high",
+                        "reason": "检测到字面量除以 0（编译/解释阶段可确定），将导致运行时报错",
+                    }
+                )
+        self.generic_visit(node)
+
+    def _scan_block_for_dead_code(self, stmts: List[ast.stmt], parent: ast.AST):
+        terminated = False
+        for st in stmts:
+            if terminated:
+                self.defects.append(
+                    {
+                        "type": "DeadCode",
+                        "file": self._file,
+                        "line": self._line(st),
+                        "confidence": "high",
+                        "reason": "检测到 return/raise/continue/break 之后仍存在同一代码块语句，属于不可达代码",
+                    }
+                )
+                # continue scanning to flag more dead code lines
+                continue
+            if isinstance(st, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+                terminated = True
+
+    def _scan_uninitialized_in_function(self, fn: ast.AST):
+        # High-confidence uninitialized local usage in Python function scope:
+        # if a name is loaded before first assignment in the same function, and it's not a parameter
+        # (ignores global/nonlocal and comprehensions for simplicity).
+        params = set()
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for a in fn.args.args + fn.args.kwonlyargs:
+                params.add(a.arg)
+            if fn.args.vararg:
+                params.add(fn.args.vararg.arg)
+            if fn.args.kwarg:
+                params.add(fn.args.kwarg.arg)
+
+        assigned = set()
+        declared_global = set()
+        declared_nonlocal = set()
+
+        for st in fn.body:  # type: ignore[attr-defined]
+            if isinstance(st, ast.Global):
+                declared_global.update(st.names)
+            if isinstance(st, ast.Nonlocal):
+                declared_nonlocal.update(st.names)
+
+        class _LocalWalk(ast.NodeVisitor):
+            def __init__(self, outer: "_PyDefectVisitor"):
+                self.outer = outer
+
+            def visit_Name(self, n: ast.Name):
+                if isinstance(n.ctx, ast.Load):
+                    name = n.id
+                    if name in params:
+                        return
+                    if name in declared_global or name in declared_nonlocal:
+                        return
+                    # Skip builtins-like common names (best-effort)
+                    if name in {"True", "False", "None"}:
+                        return
+                    if name not in assigned:
+                        self.outer.defects.append(
+                            {
+                                "type": "UninitializedVar",
+                                "file": self.outer._file,
+                                "line": self.outer._line(n),
+                                "confidence": "high",
+                                "reason": f"检测到局部变量 `{name}` 可能在赋值前被使用（函数作用域内可确定）",
+                            }
+                        )
+
+            def visit_Assign(self, n: ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        assigned.add(t.id)
+                self.generic_visit(n)
+
+            def visit_AnnAssign(self, n: ast.AnnAssign):
+                if isinstance(n.target, ast.Name):
+                    assigned.add(n.target.id)
+                self.generic_visit(n)
+
+            def visit_AugAssign(self, n: ast.AugAssign):
+                # x += 1 reads x before write; if x not assigned, flag as uninitialized too
+                if isinstance(n.target, ast.Name):
+                    name = n.target.id
+                    if name not in assigned and name not in params:
+                        self.outer.defects.append(
+                            {
+                                "type": "UninitializedVar",
+                                "file": self.outer._file,
+                                "line": self.outer._line(n),
+                                "confidence": "high",
+                                "reason": f"检测到 `{name} += ...` 可能在赋值前使用（aug-assign 读写同名变量）",
+                            }
+                        )
+                    assigned.add(name)
+                self.generic_visit(n)
+
+        walker = _LocalWalk(self)
+        for st in fn.body:  # type: ignore[attr-defined]
+            walker.visit(st)
+
+
 def _python_static_scan(path: str, content: str) -> List[Dict]:
     defects = []
     # 死循环：while True 无 break/return
@@ -194,6 +254,16 @@ def _python_static_scan(path: str, content: str) -> List[Dict]:
                 "reason": f"条件恒定 {literal}，可能是遗留调试分支",
             }
         )
+    # AST-based high-confidence checks
+    try:
+        tree = ast.parse(content or "", filename=path)
+        v = _PyDefectVisitor()
+        v._file = path  # attach for reporting
+        v.visit(tree)
+        defects.extend(v.defects)
+    except Exception:
+        # parsing failed: compile_guard should catch; keep static scan quiet here
+        pass
     return defects
 
 
@@ -250,164 +320,12 @@ def _security_signal_scan(path: str, content: str) -> List[Dict]:
 
 class MCPClient:
     """
-    本地 MCP 实现：优先运行真实编译/类型检查命令，辅以启发式解析。
+    本地 MCP 实现：只做“确定性事实”收集（静态必然缺陷/依赖/安全信号）。
+    编译级审查已由 LangGraph 中的 LLM compile_guard 节点负责。
     """
 
     def __init__(self, settings: Settings):
         self.settings = settings
-
-    # Compile / Parse
-    def _detect_language_by_ext(self, path: str, fallback: str) -> str:
-        ext_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".java": "java",
-            ".c": "c",
-            ".cc": "cpp",
-            ".cpp": "cpp",
-            ".cxx": "cpp",
-            ".go": "go",
-            ".rs": "rust",
-            ".php": "php",
-            ".rb": "ruby",
-        }
-        for k, v in ext_map.items():
-            if path.endswith(k):
-                return v
-        return fallback or "mixed"
-
-    def compile_check(self, language: str, files: List[Dict[str, str]]) -> Dict:
-        """
-        DEPRECATED: 编译级审查已迁移至 LLM compile_guard 节点。
-        保留此函数仅为兼容旧调用方；当前固定返回可编译且无错误。
-        """
-        _ = (language, files)
-        return {"compilable": True, "errors": []}
-
-        def add_heuristics(path: str, content: str) -> List[Dict]:
-            heur: List[Dict] = []
-            # 快速潜在空指针
-            if re.search(r"\bnull\s*\.", content, re.IGNORECASE) or re.search(r"\bNone\s*\.", content):
-                heur.append(
-                    {
-                        "file": path,
-                        "line": 1,
-                        "type": "PotentialNullDeref",
-                        "message": "检测到对 null/None 的直接属性访问（启发式）",
-                    }
-                )
-            # 快速死循环
-            if re.search(r"while\s+True\s*:", content) or re.search(r"while\s*\(\s*true\s*\)", content, re.IGNORECASE):
-                heur.append(
-                    {
-                        "file": path,
-                        "line": 1,
-                        "type": "PotentialInfiniteLoop",
-                        "message": "检测到 while True/while(true)（启发式），请确认退出条件",
-                    }
-                )
-            return heur
-
-        def run_cmd(cmd: List[str], workdir: str) -> Tuple[int, str, str]:
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=workdir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-                return proc.returncode, proc.stdout, proc.stderr
-            except FileNotFoundError:
-                return 127, "", "compiler not found"
-            except Exception as exc:  # noqa: BLE001
-                return 1, "", f"{type(exc).__name__}: {exc}"
-
-        def parse_stderr(stderr: str, path: str, lang: str) -> List[Dict]:
-            errs: List[Dict] = []
-            lines = stderr.splitlines()
-            for ln in lines:
-                if not ln.strip():
-                    continue
-                # 粗略抽取行号
-                m = re.search(r"(?P<file>[^\s:]+):(?P<line>\d+)", ln)
-                line_no = int(m.group("line")) if m else 0
-                errs.append(
-                    {
-                        "file": m.group("file") if m else path,
-                        "line": line_no,
-                        "type": "SyntaxError" if "syntax" in ln.lower() else "TypeError" if "type" in ln.lower() else "CompileError",
-                        "message": ln.strip(),
-                    }
-                )
-            return errs
-
-        compiler_map = {
-            "python": lambda p: ["python", "-m", "py_compile", p],
-            "javascript": lambda p: ["node", "--check", p],
-            "typescript": lambda p: ["npx", "tsc", "--noEmit", "--pretty", "false", p],
-            "java": lambda p: ["javac", p],
-            "c": lambda p: ["gcc", "-fsyntax-only", p],
-            "cpp": lambda p: ["g++", "-fsyntax-only", p],
-            "go": lambda p: ["go", "tool", "compile", p],
-            "rust": lambda p: ["rustc", "--emit=metadata", p],
-            "php": lambda p: ["php", "-l", p],
-            "ruby": lambda p: ["ruby", "-c", p],
-        }
-
-        errors: List[Dict] = []
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for f in files:
-                path = f.get("path") or "unknown"
-                content = f.get("content") or ""
-                lang = self._detect_language_by_ext(path, language)
-
-                # 先快速启发式
-                errors.extend(add_heuristics(path, content))
-
-                # 针对语言的轻量语法检查
-                if lang == "python":
-                    errors.extend(_python_syntax_check(path, content))
-                elif lang in {"javascript", "typescript"}:
-                    errors.extend(_js_syntax_heuristic(path, content))
-                elif lang in {"java", "c", "cpp", "go", "rust", "ruby"}:
-                    errors.extend(_java_like_syntax(path, content))
-                elif lang == "php":
-                    errors.extend(_php_syntax(path, content))
-
-                # 真实编译器调用（若可用）
-                cmd_builder = compiler_map.get(lang)
-                if cmd_builder:
-                    # 写临时文件，保持原扩展名
-                    tmp_path = os.path.join(tmpdir, os.path.basename(path) or f"code{len(errors)}")
-                    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-                    with open(tmp_path, "w", encoding="utf-8", newline="") as wf:
-                        wf.write(content)
-                    cmd = cmd_builder(tmp_path)
-                    code, out, err = run_cmd(cmd, tmpdir)
-                    if code != 0:
-                        parsed = parse_stderr(err or out, path, lang)
-                        # 如果编译器无结构化信息，至少给一条通用错误
-                        if not parsed:
-                            parsed = [
-                                {
-                                    "file": path,
-                                    "line": 0,
-                                    "type": "CompileError",
-                                    "message": (err or out or "compiler failed").strip(),
-                                }
-                            ]
-                        errors.extend(parsed)
-
-        # 排序：语法/类型 > 缺依赖/编译 > 启发式风险
-        priority = {"SyntaxError": 0, "TypeError": 1, "CompileError": 2, "MissingDependency": 2, "PotentialNullDeref": 3, "PotentialInfiniteLoop": 3}
-        errors.sort(key=lambda e: priority.get(e.get("type", "CompileError"), 4))
-        return {"compilable": len(errors) == 0, "errors": errors}
 
     # Static deterministic defects
     def static_defect_scan(self, files: List[Dict[str, str]]) -> Dict:

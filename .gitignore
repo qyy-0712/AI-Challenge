@@ -6,6 +6,7 @@ __pycache__/
 
 # Reports (generated)
 /reports/
+/backend/reports/
 
 # Frontend
 /frontend/node_modules/
@@ -14,4 +15,8 @@ __pycache__/
 # OS
 Thumbs.db
 Desktop.ini
+
+# Secrets
+.env
+backend/.env
 

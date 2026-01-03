@@ -87,7 +87,7 @@ async def export_review(review_id: str):
         raise HTTPException(status_code=404, detail="report not found")
     return FileResponse(
         path=str(p),
-        media_type="text/markdown; charset=utf-8",
+        media_type="text/plain; charset=utf-8",
         filename=p.name,
     )
 
